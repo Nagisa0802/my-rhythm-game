@@ -26,7 +26,7 @@
     <div id="game-container" class="relative w-full h-full flex items-center justify-center">
         <!-- 頂部資訊 -->
         <div class="absolute top-12 left-6 z-10 pointer-events-none">
-            <div id="score-text" class="text-xl font-mono text-cyan-400 uppercase tracking-wider">目前分數: 000000</div>
+            <div id="score-text" class="text-xl font-mono text-cyan-400 uppercase tracking-wider">分數: 000000</div>
             <div id="combo-text" class="text-4xl font-black text-white italic"></div>
             <div id="auto-indicator" class="hidden text-rose-500 font-bold text-sm mt-1 tracking-widest uppercase">自動遊玩中</div>
         </div>
@@ -48,7 +48,7 @@
             <div id="menu" class="pointer-events-auto bg-slate-900/95 p-8 rounded-[2rem] border border-slate-700 shadow-2xl flex flex-col items-center gap-6 text-center mx-4 max-w-md w-full">
                 <div class="space-y-1">
                     <h1 class="text-3xl font-black text-cyan-400 tracking-tighter italic">CHEN'S CRAFT</h1>
-                    <p class="text-slate-500 text-[10px] uppercase font-bold tracking-[0.2em]">音樂節奏引擎</p>
+                    <p class="text-slate-500 text-[10px] uppercase font-bold tracking-[0.2em]">音樂節奏遊戲</p>
                 </div>
                 
                 <div class="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-full border border-slate-700">
@@ -66,7 +66,7 @@
                 </div>
 
                 <div class="w-full pt-2">
-                    <button onclick="document.getElementById('music-upload').click()" class="w-full bg-cyan-600 hover:bg-cyan-500 p-5 rounded-2xl font-black text-base transition-all shadow-[0_10px_20px_rgba(8,145,178,0.3)] text-white flex items-center justify-center gap-3 active:scale-95 mb-4">
+                    <button id="start-btn" onclick="document.getElementById('music-upload').click()" class="w-full bg-cyan-600 hover:bg-cyan-500 p-5 rounded-2xl font-black text-base transition-all shadow-[0_10px_20px_rgba(8,145,178,0.3)] text-white flex items-center justify-center gap-3 active:scale-95 mb-4">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
                         </svg>
@@ -123,12 +123,25 @@
         const autoPlayToggle = document.getElementById('auto-play-toggle');
         const autoIndicator = document.getElementById('auto-indicator');
 
+        // 延遲補償配置 (秒) - 如果感覺音樂太慢，就調大負值 (如 -0.15)；如果音樂太快，就調小或設為正值。
+        const AUDIO_OFFSET = -0.10; 
+
         let CANVAS_WIDTH, CANVAS_HEIGHT, LANE_WIDTH, JUDGMENT_LINE_Y;
         let difficulty = 'Normal', noteSpeed = 13, gameActive = false, isPaused = false, isCountingDown = false, isAutoPlay = false;
         let score = 0, combo = 0, maxCombo = 0, perfectCount = 0, notes = [], startTime = 0, pauseStartTime = 0, totalPausedTime = 0;
         let audioCtx, audioBuffer, audioSource;
         const activeLanes = [false, false, false, false];
-        const SYNC_OFFSET = 0.05;
+        
+        // 為了降低延遲，提前初始化音訊上下文
+        function initAudioContext() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                // 在安卓/iOS上必須由使用者觸發恢復
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+            }
+        }
 
         function resize() {
             CANVAS_WIDTH = window.innerWidth; CANVAS_HEIGHT = window.innerHeight;
@@ -146,10 +159,10 @@
         }
 
         musicUpload.addEventListener('change', async (e) => {
+            initAudioContext();
             const file = e.target.files[0]; if (!file) return;
             menuEl.classList.add('hidden');
             const arrayBuffer = await file.arrayBuffer();
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
             isAutoPlay = autoPlayToggle.checked;
             if (isAutoPlay) autoIndicator.classList.remove('hidden');
@@ -165,7 +178,7 @@
                 let sum = 0; for (let j = 0; j < chunkSize && i + j < data.length; j++) sum += data[i+j] * data[i+j];
                 const energy = Math.sqrt(sum / chunkSize);
                 if (energy > prevEnergy * config.thresh && energy > config.minE) {
-                    const time = (i / sampleRate) - 0.02;
+                    const time = (i / sampleRate);
                     if (notes.length === 0 || time - notes[notes.length - 1].time > config.gap) notes.push({ lane: Math.floor(Math.random() * 4), time: time, hit: false, missed: false });
                 }
                 prevEnergy = energy;
@@ -200,15 +213,28 @@
         function startGame() {
             gameActive = true; pauseBtn.classList.remove('hidden');
             score = 0; combo = 0; maxCombo = 0; perfectCount = 0; totalPausedTime = 0; updateUI();
+            
+            // 下落時間 = 距離 / 速度
             const travelTime = JUDGMENT_LINE_Y / (noteSpeed * 60);
-            startTime = audioCtx.currentTime + travelTime - SYNC_OFFSET; 
-            setTimeout(() => { if(!gameActive || isPaused) return; playMusicFrom(0); }, travelTime * 1000);
+            
+            // startTime 決定了音訊播放的同步點。加入 AUDIO_OFFSET 修正延遲
+            startTime = audioCtx.currentTime + travelTime + AUDIO_OFFSET; 
+            
+            // 延遲播放音樂，直到音符剛好到達判定線
+            const playDelay = travelTime + AUDIO_OFFSET;
+            if (playDelay > 0) {
+                setTimeout(() => { if(!gameActive || isPaused) return; playMusicFrom(0); }, playDelay * 1000);
+            } else {
+                playMusicFrom(Math.abs(playDelay));
+            }
         }
 
         function playMusicFrom(offset) {
             if (audioSource) try { audioSource.stop(); } catch(e) {}
-            audioSource = audioCtx.createBufferSource(); audioSource.buffer = audioBuffer;
-            audioSource.connect(audioCtx.destination); audioSource.start(0, offset);
+            audioSource = audioCtx.createBufferSource(); 
+            audioSource.buffer = audioBuffer;
+            audioSource.connect(audioCtx.destination); 
+            audioSource.start(0, offset);
             audioSource.onended = () => { if(gameActive && !isPaused) checkGameEnd(); };
         }
 
@@ -219,9 +245,11 @@
                 if (audioSource) try { audioSource.stop(); } catch(e) {}
                 pauseMenuEl.classList.remove('hidden');
             } else {
-                isPaused = false; totalPausedTime += (audioCtx.currentTime - pauseStartTime);
+                isPaused = false; 
+                totalPausedTime += (audioCtx.currentTime - pauseStartTime);
                 if (gameActive) {
-                    const currentMusicTime = audioCtx.currentTime - startTime - totalPausedTime + (JUDGMENT_LINE_Y / (noteSpeed * 60));
+                    const travelTime = JUDGMENT_LINE_Y / (noteSpeed * 60);
+                    const currentMusicTime = audioCtx.currentTime - startTime - totalPausedTime + travelTime;
                     if (currentMusicTime > 0) playMusicFrom(currentMusicTime);
                     else setTimeout(() => { if (!isPaused && gameActive) playMusicFrom(0); }, Math.abs(currentMusicTime) * 1000);
                 }
@@ -234,7 +262,7 @@
                 if (isPaused) return;
                 const now = audioCtx.currentTime - startTime - totalPausedTime;
                 const lastNote = notes[notes.length - 1];
-                if (!lastNote || now > lastNote.time + 0.8) { 
+                if (!lastNote || now > lastNote.time + 1.0) { 
                     clearInterval(checkInterval); 
                     if(gameActive) setTimeout(showResults, 500); 
                 }
@@ -244,13 +272,21 @@
         function handleInput(lane, isAuto = false) {
             if (!gameActive || isPaused) return;
             activeLanes[lane] = true; setTimeout(() => activeLanes[lane] = false, 100);
+            
             const now = audioCtx.currentTime - startTime - totalPausedTime;
-            const target = notes.find(n => !n.hit && !n.missed && n.lane === lane && Math.abs(n.time - now) < 0.18);
+            // 擴大搜尋範圍以提升手感，但判定標準不變
+            const target = notes.find(n => !n.hit && !n.missed && n.lane === lane && Math.abs(n.time - now) < 0.20);
+            
             if (target) {
-                const diff = Math.abs(target.time - now) * 1000; target.hit = true;
-                if (isAuto || diff <= 70) { perfectCount++; score += 100; combo++; showJudgement("PERFECT", "#fbbf24"); }
-                else if (diff <= 130) { score += 50; combo++; showJudgement("GOOD", "#22d3ee"); }
-                else target.hit = false;
+                const diff = Math.abs(target.time - now) * 1000; 
+                target.hit = true;
+                if (isAuto || diff <= 75) { 
+                    perfectCount++; score += 100; combo++; showJudgement("PERFECT", "#fbbf24"); 
+                } else if (diff <= 150) { 
+                    score += 50; combo++; showJudgement("GOOD", "#22d3ee"); 
+                } else {
+                    target.hit = false; // 沒打準，不計分
+                }
                 if (combo > maxCombo) maxCombo = combo; updateUI();
             }
         }
@@ -267,8 +303,6 @@
 
         function showResults() {
             gameActive = false; pauseBtn.classList.add('hidden');
-            
-            // 計算評分算法 (以 Perfect 100分, Good 50分計)
             const maxPossibleScore = notes.length * 100;
             const accuracy = maxPossibleScore > 0 ? (score / maxPossibleScore) * 100 : 0;
             
@@ -279,7 +313,6 @@
             
             if (isAutoPlay) document.getElementById('auto-tag').classList.remove('hidden');
             
-            // 精確評級
             let rank = 'F';
             if (accuracy >= 95) rank = 'SS';
             else if (accuracy >= 90) rank = 'S';
@@ -297,31 +330,65 @@
             const blob = new Blob([html], { type: 'text/html' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'ChensCraft.html';
+            a.download = 'ChensCraft_NoDelay.html';
             a.click();
         }
 
-        window.addEventListener('keydown', e => { if (e.key === 'Escape') togglePause(); const l = {'d':0,'f':1,'j':2,'k':3}[e.key.toLowerCase()]; if(l!==undefined) handleInput(l); });
-        canvas.addEventListener('touchstart', e => { if (isPaused) return; e.preventDefault(); Array.from(e.changedTouches).forEach(t => handleInput(Math.floor((t.clientX - canvas.getBoundingClientRect().left) / (canvas.width / 4)))); }, {passive: false});
+        // 監聽鍵盤與觸摸
+        window.addEventListener('keydown', e => { 
+            initAudioContext();
+            if (e.key === 'Escape') togglePause(); 
+            const l = {'d':0,'f':1,'j':2,'k':3}[e.key.toLowerCase()]; 
+            if(l!==undefined) handleInput(l); 
+        });
+
+        canvas.addEventListener('touchstart', e => { 
+            initAudioContext();
+            if (isPaused) return; 
+            e.preventDefault(); 
+            Array.from(e.changedTouches).forEach(t => handleInput(Math.floor((t.clientX - canvas.getBoundingClientRect().left) / (canvas.width / 4)))); 
+        }, {passive: false});
 
         function gameLoop() {
             if (!gameActive && !isCountingDown) return;
             if (isPaused) { requestAnimationFrame(gameLoop); return; }
+            
             const now = gameActive ? (audioCtx.currentTime - startTime - totalPausedTime) : -100;
             ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-            activeLanes.forEach((active, i) => { if(active) { ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(i * LANE_WIDTH, 0, LANE_WIDTH, JUDGMENT_LINE_Y); } });
+            
+            // 繪製軌道發光
+            activeLanes.forEach((active, i) => { if(active) { ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(i * LANE_WIDTH, 0, LANE_WIDTH, JUDGMENT_LINE_Y); } });
+            
+            // 繪製判定線
             ctx.fillStyle = '#64748b'; ctx.fillRect(0, JUDGMENT_LINE_Y, CANVAS_WIDTH, 3);
+            
+            // 繪製音符
             notes.forEach(n => {
                 if (n.hit) return;
+                
+                // 自動模式邏輯
                 if (isAutoPlay && now >= n.time && !n.hit && !n.missed) handleInput(n.lane, true);
+                
                 const y = JUDGMENT_LINE_Y - (n.time - now) * noteSpeed * 60;
+                
+                // 只渲染可見區域內的音符
                 if (y > -50 && y < CANVAS_HEIGHT + 50) {
                     ctx.fillStyle = ['#f87171','#60a5fa','#a855f7','#fbbf24'][n.lane];
-                    ctx.beginPath(); ctx.roundRect(n.lane * LANE_WIDTH + 20, y - 12, LANE_WIDTH - 40, 24, 10); ctx.fill();
+                    ctx.beginPath(); 
+                    ctx.roundRect(n.lane * LANE_WIDTH + 20, y - 12, LANE_WIDTH - 40, 24, 10); 
+                    ctx.fill();
                     ctx.strokeStyle = 'white'; ctx.lineWidth = 1; ctx.stroke();
                 }
-                if (now > n.time + 0.15 && !n.hit && !n.missed) { n.missed = true; combo = 0; showJudgement("MISS", "#ef4444"); updateUI(); }
+                
+                // 錯失判定 (逾時)
+                if (now > n.time + 0.18 && !n.hit && !n.missed) { 
+                    n.missed = true; 
+                    combo = 0; 
+                    showJudgement("MISS", "#ef4444"); 
+                    updateUI(); 
+                }
             });
+            
             requestAnimationFrame(gameLoop);
         }
     </script>
