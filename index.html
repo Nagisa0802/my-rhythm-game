@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Web Rhythm Game Pro - Auto Beats</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: white;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: sans-serif;
+            touch-action: none;
+            /* 防止 iOS 長按選取文字 */
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        canvas {
+            background: linear-gradient(to bottom, #0f172a, #1e293b);
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            width: 100% !important;
+            height: 100% !important;
+        }
+        .judgment-anim {
+            animation: pop 0.15s ease-out;
+        }
+        @keyframes pop {
+            0% { transform: scale(1.4); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        #music-upload { display: none; }
+        
+        /* 增加手機點擊回饋感 */
+        .lane-flash {
+            position: absolute;
+            bottom: 0;
+            width: 25%;
+            height: 100%;
+            background: linear-gradient(to top, rgba(255,255,255,0.1), transparent);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container" class="relative w-full h-full flex flex-col items-center justify-center bg-black">
+        <!-- 分數顯示 -->
+        <div class="absolute top-10 left-6 z-10 pointer-events-none">
+            <div id="score-text" class="text-xl font-mono text-cyan-400">SCORE: 000000</div>
+            <div id="combo-text" class="text-3xl font-bold text-white italic drop-shadow-lg"></div>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+        
+        <!-- UI 層 -->
+        <div id="ui-layer" class="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+            <div id="judgment-text" class="text-5xl font-black italic drop-shadow-md"></div>
+            
+            <!-- 選單 -->
+            <div id="menu" class="pointer-events-auto bg-slate-900/95 p-8 rounded-3xl border border-slate-700 shadow-2xl flex flex-col items-center gap-6 text-center mx-4 max-w-sm">
+                <h1 class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">BEAT MASTER</h1>
+                <p class="text-slate-400 text-sm">匯入手機音樂，自動生成對拍譜面</p>
+                
+                <label for="music-upload" class="bg-cyan-600 hover:bg-cyan-500 px-8 py-4 rounded-full cursor-pointer transition-all font-bold shadow-lg shadow-cyan-900/20 active:scale-95">
+                    選擇音樂檔案
+                </label>
+                <input type="file" id="music-upload" accept="audio/*">
+            </div>
+
+            <!-- 載入中 -->
+            <div id="loading" class="hidden flex flex-col items-center gap-4">
+                <div class="w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
+                <div class="text-xl text-cyan-400 font-bold text-center">正在分析手機音軌節拍...</div>
+            </div>
+
+            <!-- 結算畫面 -->
+            <div id="result-screen" class="hidden pointer-events-auto bg-slate-900/98 p-10 rounded-3xl border-2 border-cyan-500 shadow-2xl flex flex-col items-center gap-4 text-center mx-4 min-w-[300px]">
+                <h2 class="text-3xl font-black text-yellow-400">FINISHED!</h2>
+                <div class="space-y-1 my-4 w-full">
+                    <div class="flex justify-between text-slate-400"><span>Final Score</span><span id="final-score" class="text-white font-mono">0</span></div>
+                    <div class="flex justify-between text-slate-400"><span>Max Combo</span><span id="max-combo" class="text-white font-mono">0</span></div>
+                    <div class="flex justify-between text-slate-400"><span>Perfect Hits</span><span id="perfect-count" class="text-white font-mono">0</span></div>
+                </div>
+                <div id="rank-text" class="text-6xl font-black text-cyan-400 mb-4">A</div>
+                <button onclick="location.reload()" class="w-full bg-slate-700 hover:bg-slate-600 px-6 py-3 rounded-xl font-bold transition-colors active:scale-95">
+                    返回主選單
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const musicUpload = document.getElementById('music-upload');
+        const menuEl = document.getElementById('menu');
+        const loadingEl = document.getElementById('loading');
+        const resultEl = document.getElementById('result-screen');
+        const scoreEl = document.getElementById('score-text');
+        const comboEl = document.getElementById('combo-text');
+        const judgmentEl = document.getElementById('judgment-text');
+
+        const LANE_COUNT = 4;
+        let LANE_WIDTH, CANVAS_WIDTH, CANVAS_HEIGHT, JUDGMENT_LINE_Y;
+        const JUDGMENT_LINE_Y_RATIO = 0.85;
+        const NOTE_SPEED = 8;
+        const KEYS = ['d', 'f', 'j', 'k'];
+        const COLORS = ['#f87171', '#60a5fa', '#a855f7', '#fbbf24'];
+
+        let audioCtx, audioSource, audioBuffer;
+        let score = 0, combo = 0, maxCombo = 0, perfectCount = 0;
+        let notes = [];
+        let gameActive = false;
+        let startTime = 0;
+        const activeLanes = new Array(LANE_COUNT).fill(false);
+
+        function resize() {
+            CANVAS_WIDTH = window.innerWidth;
+            CANVAS_HEIGHT = window.innerHeight;
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
+            LANE_WIDTH = CANVAS_WIDTH / LANE_COUNT;
+            JUDGMENT_LINE_Y = CANVAS_HEIGHT * JUDGMENT_LINE_Y_RATIO;
+        }
+        window.addEventListener('resize', resize);
+        window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+        resize();
+
+        musicUpload.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            menuEl.classList.add('hidden');
+            loadingEl.classList.remove('hidden');
+
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                analyzeBeats(audioBuffer);
+                loadingEl.classList.add('hidden');
+                startGame();
+            } catch (err) {
+                alert("無法解析此音訊檔案，請更換其他音樂測試。");
+                location.reload();
+            }
+        });
+
+        function analyzeBeats(buffer) {
+            const data = buffer.getChannelData(0);
+            const sampleRate = buffer.sampleRate;
+            const chunkSize = Math.floor(sampleRate * 0.05);
+            const energyHistory = [];
+            notes = [];
+
+            for (let i = 0; i < data.length; i += chunkSize) {
+                let sum = 0;
+                for (let j = 0; j < chunkSize && i + j < data.length; j++) {
+                    sum += data[i + j] * data[i + j];
+                }
+                const energy = Math.sqrt(sum / chunkSize);
+                const avgEnergy = energyHistory.length > 0 ? energyHistory.reduce((a, b) => a + b) / energyHistory.length : 0;
+                const threshold = 1.45;
+
+                if (energy > avgEnergy * threshold && energy > 0.05) {
+                    const time = i / sampleRate;
+                    if (notes.length === 0 || time - notes[notes.length - 1].time > 0.18) {
+                        notes.push({
+                            lane: Math.floor(Math.random() * LANE_COUNT),
+                            time: time,
+                            hit: false,
+                            missed: false
+                        });
+                    }
+                }
+                energyHistory.push(energy);
+                if (energyHistory.length > 20) energyHistory.shift();
+            }
+        }
+
+        function startGame() {
+            score = 0; combo = 0; maxCombo = 0; perfectCount = 0;
+            gameActive = true;
+            updateScoreUI();
+            
+            audioSource = audioCtx.createBufferSource();
+            audioSource.buffer = audioBuffer;
+            audioSource.connect(audioCtx.destination);
+            audioSource.start();
+            startTime = audioCtx.currentTime;
+
+            audioSource.onended = () => {
+                setTimeout(showResults, 1000);
+            };
+            requestAnimationFrame(gameLoop);
+        }
+
+        function handleInput(index) {
+            if (!gameActive) return;
+            activeLanes[index] = true;
+            setTimeout(() => activeLanes[index] = false, 100);
+
+            const currentTime = audioCtx.currentTime - startTime;
+            const hitThreshold = 0.15; 
+            const targetNote = notes.find(n => !n.hit && !n.missed && n.lane === index && Math.abs(n.time - currentTime) < hitThreshold);
+
+            if (targetNote) {
+                targetNote.hit = true;
+                const diff = Math.abs(targetNote.time - currentTime);
+                if (diff < 0.06) {
+                    perfectCount++;
+                    processHit('PERFECT', 'text-yellow-400', 100);
+                } else {
+                    processHit('GREAT', 'text-cyan-400', 50);
+                }
+            }
+        }
+
+        function processHit(rating, color, pts) {
+            score += pts;
+            combo++;
+            if (combo > maxCombo) maxCombo = combo;
+            updateScoreUI();
+            showJudgment(rating, color);
+        }
+
+        function updateScoreUI() {
+            scoreEl.innerText = `SCORE: ${score.toString().padStart(6, '0')}`;
+            comboEl.innerText = combo > 2 ? `${combo} COMBO` : '';
+        }
+
+        function showJudgment(text, color) {
+            judgmentEl.innerText = text;
+            judgmentEl.className = `text-5xl font-black italic judgment-anim ${color}`;
+        }
+
+        function showResults() {
+            gameActive = false;
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('max-combo').innerText = maxCombo;
+            document.getElementById('perfect-count').innerText = perfectCount;
+            
+            let rank = 'C';
+            if (score > notes.length * 80) rank = 'S';
+            else if (score > notes.length * 60) rank = 'A';
+            else if (score > notes.length * 40) rank = 'B';
+            document.getElementById('rank-text').innerText = rank;
+
+            resultEl.classList.remove('hidden');
+        }
+
+        window.addEventListener('keydown', (e) => {
+            const idx = KEYS.indexOf(e.key.toLowerCase());
+            if (idx !== -1) handleInput(idx);
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            Array.from(e.changedTouches).forEach(touch => {
+                const rect = canvas.getBoundingClientRect();
+                const laneIndex = Math.floor((touch.clientX - rect.left) / (rect.width / LANE_COUNT));
+                if (laneIndex >= 0 && laneIndex < LANE_COUNT) handleInput(laneIndex);
+            });
+        }, {passive: false});
+
+        function gameLoop() {
+            if (!gameActive) return;
+            const currentTime = audioCtx.currentTime - startTime;
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            // 背景與軌道
+            for(let i=0; i<LANE_COUNT; i++) {
+                if(activeLanes[i]) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+                    ctx.fillRect(i * LANE_WIDTH, 0, LANE_WIDTH, CANVAS_HEIGHT);
+                }
+            }
+            
+            ctx.strokeStyle = 'rgba(51, 65, 85, 0.5)';
+            ctx.lineWidth = 1;
+            for(let i=1; i<LANE_COUNT; i++) {
+                ctx.beginPath(); ctx.moveTo(i * LANE_WIDTH, 0); ctx.lineTo(i * LANE_WIDTH, CANVAS_HEIGHT); ctx.stroke();
+            }
+
+            // 判定線
+            ctx.strokeStyle = '#64748b';
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(0, JUDGMENT_LINE_Y); ctx.lineTo(CANVAS_WIDTH, JUDGMENT_LINE_Y); ctx.stroke();
+
+            // 音符
+            notes.forEach(note => {
+                if (note.hit) return;
+                const timeDiff = note.time - currentTime;
+                const y = JUDGMENT_LINE_Y - (timeDiff * NOTE_SPEED * 60);
+
+                if (y > -50 && y < CANVAS_HEIGHT + 50) {
+                    const x = note.lane * LANE_WIDTH + 8;
+                    const w = LANE_WIDTH - 16;
+                    ctx.fillStyle = COLORS[note.lane];
+                    ctx.beginPath();
+                    ctx.roundRect(x, y, w, 22, 6);
+                    ctx.fill();
+                }
+
+                if (!note.missed && !note.hit && currentTime > note.time + 0.2) {
+                    note.missed = true;
+                    combo = 0;
+                    showJudgment('MISS', 'text-red-500');
+                    updateScoreUI();
+                }
+            });
+
+            requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
