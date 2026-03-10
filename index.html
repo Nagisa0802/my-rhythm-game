@@ -7,7 +7,12 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #020617; color: white; overflow: hidden; height: 100vh; margin: 0; font-family: sans-serif; touch-action: none; -webkit-user-select: none; }
-        canvas { background: radial-gradient(circle at center, #0f172a 0%, #020617 100%); display: block; width: 100%; height: 100%; }
+        canvas { background: radial-gradient(circle at center, #0f172a 0%, #020617 100%); display: block; width: 100%; height: 100%; position: fixed; top: 0; left: 0; z-index: 0; }
+        
+        /* 隱藏滾動條但保留功能 */
+        #ui-layer::-webkit-scrollbar { display: none; }
+        #ui-layer { -ms-overflow-style: none; scrollbar-width: none; }
+
         .tap-active { animation: tap-flash 0.1s ease-out; }
         @keyframes tap-flash {
             0% { background-color: rgba(34, 211, 238, 0.5); }
@@ -17,9 +22,9 @@
 </head>
 <body>
 
-    <div id="game-container" class="relative w-full h-full flex items-center justify-center overflow-hidden">
-        <!-- 頂部即時數據 -->
-        <div class="absolute top-12 left-6 z-10 pointer-events-none flex flex-col gap-1">
+    <div id="game-container" class="relative w-full h-full flex items-start justify-center overflow-hidden">
+        <!-- 頂部即時數據 (固定在最上層) -->
+        <div class="fixed top-12 left-6 z-20 pointer-events-none flex flex-col gap-1">
             <div id="score-text" class="text-xl font-mono text-cyan-400 tracking-tighter">SCORE: 000000</div>
             <div id="acc-text" class="text-sm font-mono text-slate-400">ACC: 100.00%</div>
             <div id="combo-text" class="text-5xl font-black text-white italic drop-shadow-lg mt-2"></div>
@@ -27,20 +32,22 @@
 
         <canvas id="gameCanvas"></canvas>
         
-        <div id="ui-layer" class="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+        <!-- UI 容器：改為可垂直捲動，防止內容被下方遮擋 -->
+        <div id="ui-layer" class="relative z-10 w-full h-full overflow-y-auto pointer-events-none flex flex-col items-center justify-start pt-20 pb-32">
+            
             <!-- 判定文字 -->
-            <div id="judgment-text" class="text-6xl font-black italic mb-32 transition-opacity duration-200 opacity-0"></div>
+            <div id="judgment-text" class="text-6xl font-black italic mb-10 min-h-[80px] transition-opacity duration-200 opacity-0"></div>
             
             <!-- 倒數 -->
-            <div id="countdown-display" class="hidden flex flex-col items-center">
+            <div id="countdown-display" class="hidden flex flex-col items-center mt-10">
                 <div id="countdown-number" class="text-9xl font-black italic text-cyan-400">3</div>
             </div>
 
-            <!-- 主選單 -->
-            <div id="menu" class="pointer-events-auto bg-slate-900/95 p-8 rounded-[2.5rem] border border-slate-700 shadow-2xl flex flex-col items-center gap-6 text-center mx-4 max-w-md w-full backdrop-blur-md">
+            <!-- 主選單 (增加 pointer-events-auto 確保可點擊與捲動觸發) -->
+            <div id="menu" class="pointer-events-auto bg-slate-900/95 p-8 rounded-[2.5rem] border border-slate-700 shadow-2xl flex flex-col items-center gap-6 text-center mx-4 max-w-md w-full backdrop-blur-md mb-10">
                 <div class="space-y-1">
                     <h1 class="text-4xl font-black text-cyan-400 tracking-tighter italic uppercase">Chen's Craft</h1>
-                    <p class="text-slate-500 text-xs font-bold tracking-[0.2em]">現版本為 V3.1 (made by chen)</p>
+                    <p class="text-slate-500 text-xs font-bold tracking-[0.2em]">現版本為 V3.1(made by chen)</p>
                 </div>
 
                 <div class="w-full bg-slate-800/50 p-5 rounded-2xl border border-slate-700 space-y-4">
@@ -67,7 +74,7 @@
                 </div>
 
                 <button id="play-btn" class="w-full bg-cyan-600 hover:bg-cyan-500 p-5 rounded-2xl font-black text-white shadow-xl active:scale-95 transition-all text-lg tracking-widest uppercase">
-                    讀取音樂檔案(mp3)
+                    選取音檔(mp3)
                 </button>
                 <input type="file" id="music-upload" class="hidden" accept="audio/*">
             </div>
@@ -86,7 +93,7 @@
             </div>
 
             <!-- 結算畫面 -->
-            <div id="result-screen" class="hidden pointer-events-auto bg-slate-900/98 p-10 rounded-[3rem] border-2 border-cyan-500 flex flex-col items-center gap-4 text-center max-w-sm w-full backdrop-blur-xl">
+            <div id="result-screen" class="hidden pointer-events-auto bg-slate-900/98 p-10 rounded-[3rem] border-2 border-cyan-500 flex flex-col items-center gap-4 text-center max-w-sm w-full backdrop-blur-xl mb-10">
                 <h2 class="text-xl font-bold text-slate-400 uppercase tracking-widest">Performance Result</h2>
                 <div id="rank-text" class="text-9xl font-black text-cyan-400 italic leading-none my-4">S</div>
                 <div id="final-acc" class="text-2xl font-black text-white">Accuracy: 0.00%</div>
@@ -130,7 +137,6 @@
         let isCalibrating = false, calHistory = [], calCount = 0;
         let isCountingDown = false, lastToneTime = 0;
         
-        // 統計數據
         let stats = { perfect: 0, good: 0, miss: 0 };
 
         offsetSlider.value = audioOffset;
@@ -147,7 +153,6 @@
             localStorage.setItem('game_offset', audioOffset);
         };
 
-        // --- 校準邏輯 ---
         document.getElementById('cal-start-btn').onclick = (e) => {
             e.stopPropagation(); initAudio();
             isCalibrating = true; calCount = 0; calHistory = [];
@@ -196,7 +201,6 @@
         calOverlay.addEventListener('mousedown', triggerCalClick);
         calOverlay.addEventListener('touchstart', triggerCalClick);
 
-        // --- 譜面分析 ---
         async function generateChart() {
             const data = audioBuffer.getChannelData(0);
             const sampleRate = audioBuffer.sampleRate;
@@ -221,7 +225,6 @@
             }
         }
 
-        // --- 遊戲邏輯 ---
         let CANVAS_WIDTH, CANVAS_HEIGHT, LANE_WIDTH, JUDGMENT_LINE_Y;
         function resize() {
             CANVAS_WIDTH = window.innerWidth; CANVAS_HEIGHT = window.innerHeight;
@@ -306,7 +309,6 @@
         function updateAcc() {
             const totalReached = stats.perfect + stats.good + stats.miss;
             if (totalReached === 0) return;
-            // 準確率計算：Perfect 100%, Good 60%
             const currentAcc = ((stats.perfect + stats.good * 0.6) / totalReached) * 100;
             document.getElementById('acc-text').innerText = `ACC: ${currentAcc.toFixed(2)}%`;
         }
@@ -381,6 +383,8 @@
                     document.getElementById('final-score').innerText = `SCORE: ${score.toString().padStart(6, '0')}`;
                     
                     document.getElementById('result-screen').classList.remove('hidden');
+                    // 當結果出現時，自動滾動到最下方以確保按鈕可見
+                    document.getElementById('ui-layer').scrollTo({top: 1000, behavior: 'smooth'});
                 }
             }
             requestAnimationFrame(gameLoop);
